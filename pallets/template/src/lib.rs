@@ -75,13 +75,13 @@ pub mod pallet {
 	#[derive(Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default)]
 	pub struct ContrIb<AccountId, Balance> {
 		contribution: Balance,
-		account: AccountId,
-		
+		account: AccountId,		
 }
 
 	pub type FundIndex = u32;
-	pub type PropIndex = u32;//Kazu:for proposals
+	pub type PropIndex = u32;//Kazu:for proposals	
 	type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
+	pub type ContIndex<T> = Vec<AccountIdOf<T>>;//Kazu:nbr of contributors
 	type BalanceOf<T> = <<T as Config>::Currency as Currency<AccountIdOf<T>>>::Balance;
 	type ProposalInfoOf<T> = Proposal<AccountIdOf<T>, BalanceOf<T>,ClassId<T>, TokenId<T>>; //Kazu:for proposals
 	type FundInfoOf<T> = 
@@ -122,7 +122,12 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn prop_count)]
 	/// Kazu:The total number of proposals that have so far been submitted.
-	pub(super) type PropCount<T: Config> = StorageValue<_, FundIndex, ValueQuery>;
+	pub(super) type PropCount<T: Config> = StorageValue<_, PropIndex, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn cont_count)]
+	/// Kazu:The total number of proposals that have so far been submitted.
+	pub(super) type ContAcc<T: Config> = StorageValue<_, ContIndex<T>, ValueQuery>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events
@@ -294,7 +299,16 @@ pub mod pallet {
 				ContStore::<T>::mutate(c1.account,|value|{
 					*value += c1.contribution;
 				})
-			} else {ContStore::<T>::insert(account,value);}
+
+			} else {
+				ContStore::<T>::insert(&account,value);
+				//let mut ve=<ContAcc<T>>::get();
+				ContAcc::<T>::mutate(|val|{
+					val.push(account);
+				})
+				
+
+				}
 			
 			ensure!(value >= T::MinContribution::get(), Error::<T>::ContributionTooSmall);
 			let mut fund = Self::funds(index).ok_or(Error::<T>::InvalidIndex)?;
@@ -335,16 +349,74 @@ pub mod pallet {
 			//Kazu: Pay the proposal owner From Treasurery
 			
 			let prop = Props::<T>::get(index1).ok_or(Error::<T>::InvalidIndex)?;
+			
 			let price = prop.price;
 			let powner = prop.powner;
+			let ben = TreasurePalletId.into_account();
+			
 			T::Currency::transfer(
-				&TreasurePalletId.into_account(),
+				&ben,
 				&powner,
 				price,
 				ExistenceRequirement::AllowDeath,
-			)?;	
-		
+			)?;
+			
 			//Determine which contributor is included into the proposal
+			//Creating a vector containing contributor's IDs
+			let mut ve=<ContAcc<T>>::get();
+			//For each contributor ID
+			for i in ve.iter(){
+				//We get the total of [raised funds]~[Treasury]
+				let mut fund = Self::funds(index2).ok_or(Error::<T>::InvalidIndex)?;
+				let total = fund.raised;
+				//pick-up 1st contribution and convert it from type Balance to u64
+				let contrib = Self::contr_ib(i);
+				let mut contrib1 = TryInto::<u64>::try_into(contrib).ok();
+
+				//pick-up proposal price and convert it from type Balance to u64
+				let mut pr = TryInto::<u64>::try_into(price).ok();
+				let pric= match pr{
+					Some(x) => x,
+					None => 0,
+				};
+				//contrib1 is an enum collection, so we use match to extract the contribution
+				let b0= match contrib1{
+					Some(x) => x,
+					None => 0,
+				};
+				
+				//convert the raised funds from Balance to u64,
+				//and then extract the value from the enum collection 
+				let mut total0 = TryInto::<u64>::try_into(total).ok();
+				let b1= match total0{
+					Some(x) => x,
+					None => 0,
+				};
+				//In order to use divisions, we need both values to be floats
+				let price2 = pric as f64;
+				let b00= b0 as f64;
+				let b11= b1 as f64;
+				//contribution percentage calculation 
+				let mut per = 100.0*(b00/b11);
+				//amount removed from contributor share
+				let newcon=(&per*price2/100.0) as u8;
+
+				let perc = per as u8;
+
+				let newb=TryInto::<BalanceOf<T>>::try_into(newcon).ok();
+				let b= match newb {
+					Some(x) => x,
+					None => Zero::zero(),
+				};
+				//We need to update the contribution storage
+				ContStore::<T>::mutate(i,|value|{
+					
+					*value-= b;
+				});
+
+				//now convert it in u8
+				let classId = orml_nft::Pallet::<T>::transfer(&powner,&i,(prop.classId,prop.tokenId),perc);
+			}
 		
 			//calculate purcentage based on number of contributors
 		
